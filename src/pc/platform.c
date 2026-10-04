@@ -297,47 +297,251 @@ static void sys_fatal_impl(const char *msg) {
 #ifdef __ANDROID__
 #include <jni.h>
 #endif
-#include <SDL2/SDL.h>
+#include <SDL3/SDL.h>
 
 #include "platform.h"
 
 #ifdef __ANDROID__
+
+struct InlinePermissionState {
+    bool done;
+    bool granted;
+};
+
+static void SDLCALL permission_callback(void *userdata, const char *permission, bool granted) {
+    struct InlinePermissionState *state = (struct InlinePermissionState *)userdata;
+    state->granted = granted;
+    state->done = true;
+}
+
+static bool request_permission_sync(const char *permission) {
+    struct InlinePermissionState state = {
+        .done = false,
+        .granted = false
+    };
+
+    if (!SDL_RequestAndroidPermission(permission, permission_callback, &state)) {
+        return false;
+    }
+
+    while (!state.done) {
+        SDL_PumpEvents();
+        SDL_Delay(16);
+    }
+
+    return state.granted;
+}
+
+static bool has_all_files_permission(void) {
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    if (!env) { return false; }
+
+    jclass versionClass = (*env)->FindClass(env, "android/os/Build$VERSION");
+    jfieldID sdkIntField = (*env)->GetStaticFieldID(env, versionClass, "SDK_INT", "I");
+    jint sdkInt = (*env)->GetStaticIntField(env, versionClass, sdkIntField);
+
+    if (sdkInt < 30) { return true; }
+
+    jclass envClass = (*env)->FindClass(env, "android/os/Environment");
+    jmethodID isManagerMethod = (*env)->GetStaticMethodID(env, envClass, "isExternalStorageManager", "()Z");
+    
+    jboolean isGranted = (*env)->CallStaticBooleanMethod(env, envClass, isManagerMethod);
+    return (bool)isGranted;
+}
+
+static void request_all_files_permission_from_settings(void) {
+    if (has_all_files_permission()) { return; }
+
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    if (!env || !activity) return;
+
+    jclass activityClass = (*env)->GetObjectClass(env, activity);
+
+    jmethodID getPackageName = (*env)->GetMethodID(env, activityClass, "getPackageName", "()Ljava/lang/String;");
+    jstring packageName = (jstring)(*env)->CallObjectMethod(env, activity, getPackageName);
+
+    jclass uriClass = (*env)->FindClass(env, "android/net/Uri");
+    jmethodID uriParse = (*env)->GetStaticMethodID(env, uriClass, "parse", "(Ljava/lang/String;)Landroid/net/Uri;");
+    
+    const char *pkgStr = (*env)->GetStringUTFChars(env, packageName, NULL);
+    char fullUriStr[256];
+    SDL_snprintf(fullUriStr, sizeof(fullUriStr), "package:%s", pkgStr);
+    (*env)->ReleaseStringUTFChars(env, packageName, pkgStr);
+
+    jstring jFullUri = (*env)->NewStringUTF(env, fullUriStr);
+    jobject uriObj = (*env)->CallStaticObjectMethod(env, uriClass, uriParse, jFullUri);
+
+    jclass intentClass = (*env)->FindClass(env, "android/content/Intent");
+    jmethodID intentConstructor = (*env)->GetMethodID(env, intentClass, "<init>", "(Ljava/lang/String;Landroid/net/Uri;)V");
+    jstring actionStr = (*env)->NewStringUTF(env, "android.settings.MANAGE_APP_ALL_FILES_ACCESS_PERMISSION");
+    
+    jobject intentObj = (*env)->NewObject(env, intentClass, intentConstructor, actionStr, uriObj);
+
+    jmethodID startActivity = (*env)->GetMethodID(env, activityClass, "startActivity", "(Landroid/content/Intent;)V");
+    (*env)->CallVoidMethod(env, activity, startActivity, intentObj);
+}
+
+static bool request_all_files_permission(void) {
+    if (has_all_files_permission()) {
+        return true;
+    }
+
+    request_all_files_permission_from_settings();
+
+    while (!has_all_files_permission()) {
+        SDL_PumpEvents();
+        SDL_Delay(100); 
+    }
+
+    return true;
+}
+
+static const char *get_top_external_storage_path(void) {
+    static char *s_AndroidExternalFilesPath = NULL;
+
+    if (s_AndroidExternalFilesPath) {
+        return s_AndroidExternalFilesPath;
+    }
+
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    if (!env) {
+        return "/storage/emulated/0";
+    }
+
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+
+    jclass cls = (*env)->FindClass(env, "android/os/Environment");
+    if (!cls) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        return "/storage/emulated/0";
+    }
+
+    jmethodID mid = (*env)->GetStaticMethodID(env, cls, "getExternalStorageDirectory", "()Ljava/io/File;");
+    if (!mid) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, cls);
+        return "/storage/emulated/0";
+    }
+
+    jobject fileObject = (*env)->CallStaticObjectMethod(env, cls, mid);
+    if (!fileObject) {
+        if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+        (*env)->DeleteLocalRef(env, cls);
+        return "/storage/emulated/0";
+    }
+
+    jclass fileCls = (*env)->GetObjectClass(env, fileObject);
+    mid = (*env)->GetMethodID(env, fileCls, "getAbsolutePath", "()Ljava/lang/String;");
+    jstring pathString = (jstring)(*env)->CallObjectMethod(env, fileObject, mid);
+
+    if (pathString) {
+        const char *path = (*env)->GetStringUTFChars(env, pathString, NULL);
+        if (path) {
+            s_AndroidExternalFilesPath = SDL_strdup(path);
+            (*env)->ReleaseStringUTFChars(env, pathString, path);
+        }
+        (*env)->DeleteLocalRef(env, pathString);
+    }
+
+    (*env)->DeleteLocalRef(env, fileCls);
+    (*env)->DeleteLocalRef(env, fileObject);
+    (*env)->DeleteLocalRef(env, cls);
+
+    return s_AndroidExternalFilesPath ? s_AndroidExternalFilesPath : "/storage/emulated/0";
+}
+
+static bool privileged_write = false;
+static bool privileged_manage = false;
+
 const char *get_gamedir(void) {
-    SDL_bool privileged_write = SDL_FALSE, privileged_manage = SDL_FALSE;
-    static char gamedir_unprivileged[SYS_MAX_PATH] = { 0 }, gamedir_privileged[SYS_MAX_PATH] = { 0 };
-    const char *basedir_unprivileged = SDL_AndroidGetExternalStoragePath();
-    const char *basedir_privileged = SDL_AndroidGetTopExternalStoragePath();
+    static char gamedir_unprivileged[SYS_MAX_PATH] = { 0 };
+    static char gamedir_privileged[SYS_MAX_PATH] = { 0 };
 
-    snprintf(gamedir_unprivileged, sizeof(gamedir_unprivileged), 
-             "%s", basedir_unprivileged);
-    snprintf(gamedir_privileged, sizeof(gamedir_privileged), 
-             "%s/%s", basedir_privileged, ANDROID_APPNAME);
+    const char *basedir_unprivileged = SDL_GetAndroidExternalStoragePath();
+    const char *basedir_privileged = get_top_external_storage_path();
 
-    //Android 10 and below
-    privileged_write = SDL_AndroidRequestPermission("android.permission.WRITE_EXTERNAL_STORAGE");
-    //Android 11 and up
-    privileged_manage = SDL_AndroidRequestPermission("android.permission.MANAGE_EXTERNAL_STORAGE");
+    snprintf(gamedir_unprivileged, sizeof(gamedir_unprivileged), "%s", basedir_unprivileged);
+    snprintf(gamedir_privileged, sizeof(gamedir_privileged), "%s/%s", basedir_privileged, ANDROID_APPNAME);
+
+    request_permission_sync("android.permission.READ_EXTERNAL_STORAGE");
+    privileged_write = request_permission_sync("android.permission.WRITE_EXTERNAL_STORAGE");
+    privileged_manage = request_all_files_permission();
+
     return (privileged_write || privileged_manage) ? gamedir_privileged : gamedir_unprivileged;
 }
 
 static bool sFilePickerActive = false;
 
+#include "rom_checker.h"
+
+static void SDLCALL rom_file_dialog_callback(void *userdata, const char * const *filelist, int filter) {
+    sFilePickerActive = false;
+
+    if (!filelist || !filelist[0] || filelist[0][0] == '\0') { return; }
+
+    const char *selectedPath = filelist[0];
+    char tmpPath[SYS_MAX_PATH];
+    bool tmpFile = false;
+
+    if (strncmp(selectedPath, "content://", 10) == 0) {
+        const char *cache_dir = SDL_GetAndroidCachePath();
+        if (cache_dir && cache_dir[0] != '\0') {
+            snprintf(tmpPath, sizeof(tmpPath), "%s/picked_rom.tmp", cache_dir);
+        } else {
+            snprintf(tmpPath, sizeof(tmpPath), "%s/picked_rom.tmp", SDL_GetAndroidInternalStoragePath());
+        }
+        SDL_IOStream *in = SDL_IOFromFile(selectedPath, "rb");
+        if (in != NULL) {
+            SDL_IOStream *out = SDL_IOFromFile(tmpPath, "wb");
+            if (out != NULL) {
+                Uint8 buffer[16384];
+                Sint64 bytesRead = 0;
+
+                while ((bytesRead = SDL_ReadIO(in, buffer, sizeof(buffer))) > 0) {
+                    SDL_WriteIO(out, buffer, (size_t)bytesRead);
+                }
+                SDL_CloseIO(out);
+                tmpFile = true;
+            }
+            SDL_CloseIO(in);
+        }
+    } else {
+        snprintf(tmpPath, sizeof(tmpPath), "%s", selectedPath);
+    }
+
+    rom_on_drop_file(tmpPath);
+
+    if (tmpFile) {
+        remove(tmpPath);
+    }
+}
+
 void open_file_picker(void) {
-    JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
-    jobject activity = (jobject)SDL_AndroidGetActivity();
+    if (sFilePickerActive) { return; }
 
-    jclass cls = (*env)->GetObjectClass(env, activity);
-    jmethodID method = (*env)->GetMethodID(env, cls, "openFilePicker", "()V");
-
-    (*env)->CallVoidMethod(env, activity, method);
     sFilePickerActive = true;
+
+    SDL_ShowOpenFileDialog(rom_file_dialog_callback, NULL, SDL_GetKeyboardFocus(), NULL, 0, NULL, false);
+}
+
+void copy_assets_to_dir(const char *destpath) {
+    JNIEnv *env = (JNIEnv *)SDL_GetAndroidJNIEnv();
+    jobject activity = (jobject)SDL_GetAndroidActivity();
+    jclass cls = (*env)->GetObjectClass(env, activity);
+
+    jmethodID method = (*env)->GetStaticMethodID(env, cls, "copyAssetFilesToDir", "(Ljava/lang/String;)V");
+
+    jstring jdestpath = (*env)->NewStringUTF(env, destpath);
+    (*env)->CallStaticVoidMethod(env, cls, method, jdestpath);
+
+    (*env)->DeleteLocalRef(env, jdestpath);
+    (*env)->DeleteLocalRef(env, cls);
 }
 
 bool is_file_picker_open(void) {
     return sFilePickerActive;
 }
-
-#include "rom_checker.h"
 
 JNIEXPORT void JNICALL Java_org_libsdl_app_SDLActivity_nativeFilePicked(JNIEnv* env, jclass cls, jstring jpath) {
     const char* path = (*env)->GetStringUTFChars(env, jpath, NULL);
