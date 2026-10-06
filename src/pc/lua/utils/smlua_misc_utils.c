@@ -117,7 +117,9 @@ u8 djui_get_playerlist_page_index(void) {
 }
 
 bool djui_is_chatbox_open(void) {
-    return gDjuiChatBox->chatInput->base.visible;
+    return gDjuiChatBox != NULL
+        && gDjuiChatBox->chatInput != NULL
+        && gDjuiChatBox->chatInput->base.visible;
 }
 
 enum DjuiFontType djui_menu_get_font(void) {
