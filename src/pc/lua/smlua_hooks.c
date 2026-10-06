@@ -1356,21 +1356,23 @@ char** smlua_get_chat_maincommands_list(void) {
         }
     }
     char** commands = malloc((sHookedChatCommandsCount + defaultCmdsCountNew + 1) * sizeof(char*));
+    s32 commandIndex = 0;
+    
     for (s32 i = 0; i < sHookedChatCommandsCount; i++) {
         struct LuaHookedCommand* hook = &sHookedChatCommands[i];
         if (hook->isConsoleCommand) {
-            commands[i] = NULL;
             continue;
         }
-        commands[i] = strdup(hook->command);
+        commands[commandIndex++] = strdup(hook->command);
     }
+
     for (s32 i = 0; i < defaultCmdsCount; i++) {
         if (defaultCmds[i] != NULL) {
-            commands[sHookedChatCommandsCount + i] = strdup(defaultCmds[i]);
+            commands[commandIndex++] = strdup(defaultCmds[i]);
         }
-    }
-    commands[sHookedChatCommandsCount + defaultCmdsCountNew] = NULL;
-    qsort(commands, sHookedChatCommandsCount + defaultCmdsCountNew, sizeof(char*), sort_alphabetically);
+    }    
+    commands[commandIndex] = NULL;
+    qsort(commands, commandIndex, sizeof(char*), sort_alphabetically);
     return commands;
 }
 
