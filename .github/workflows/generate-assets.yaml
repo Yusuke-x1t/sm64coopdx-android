@@ -1,100 +1,88 @@
 name: Generate Assets
 
 on:
-  workflow_dispatch:
   push:
-    branches: [Testing]
-  pull_request:
-    branches: [Testing]
+    branches:
+      - Testing
+  workflow_dispatch:
 
 jobs:
-  generate-dynos:
-    runs-on: ubuntu-22.04
+  package-assets:
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
-      - name: Install dependencies
+      - name: Build organized asset package
+        shell: bash
         run: |
-          sudo apt update
-          sudo apt install -y build-essential git python3 libglew-dev libz-dev libcurl4-openssl-dev zip
+          set -euo pipefail
 
-      - name: Prepare DynOS generator
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
+          PACKAGE_DIR="sm64coopdx-assets"
+          ZIP_FILE="sm64coopdx-android-assets.zip"
 
-          path = Path("src/pc/pc_main.c")
-          text = path.read_text()
+          rm -rf "$PACKAGE_DIR" "$ZIP_FILE"
 
-          include_marker = '#include "pc/mods/mods.h"\n'
-          include_text = '#include "data/dynos.c.h"\n'
+          test -d actors
+          test -d levels
 
-          if include_text not in text:
-              if include_marker not in text:
-                  raise SystemExit("Could not find mods include marker")
-              text = text.replace(include_marker, include_marker + include_text, 1)
+          mkdir -p \
+            "$PACKAGE_DIR/models" \
+            "$PACKAGE_DIR/levels" \
+            "$PACKAGE_DIR/textures" \
+            "$PACKAGE_DIR/assets"
 
-          code_marker = '    configfile_load();\n'
+          cp -a actors/. "$PACKAGE_DIR/models/"
+          cp -a levels/. "$PACKAGE_DIR/levels/"
 
-          code_text = '''    configfile_load();
-
-          #ifdef CI_GENERATE_DYNOS
-              configSkipPackGeneration = false;
-              dynos_generate_packs("build/us_pc/dynos/packs");
-              return 0;
-          #endif
-          '''
-
-          if "#ifdef CI_GENERATE_DYNOS" not in text:
-              if code_marker not in text:
-                  raise SystemExit("Could not find configfile_load marker")
-              text = text.replace(code_marker, code_text, 1)
-
-          path.write_text(text)
-          PY
-
-      - name: Build DynOS generator
-        run: make -j$(nproc) EXTRA_CFLAGS="-DCI_GENERATE_DYNOS"
-
-      - name: Prepare vanilla DynOS pack
-        run: |
-          rm -rf build/us_pc/dynos/packs/vanilla
-          mkdir -p build/us_pc/dynos/packs/vanilla
-          cp -a actors/. build/us_pc/dynos/packs/vanilla/
-
-      - name: Generate DynOS assets
-        run: ./build/us_pc/sm64coopdx
-
-      - name: Verify generated assets
-        run: |
-          count=$(find build/us_pc/dynos/packs -type f \( -name '*.bin' -o -name '*.col' -o -name '*.tex' \) | wc -l)
-
-          echo "Generated DynOS assets: $count"
-
-          test "$count" -gt 0
-
-      - name: Create assets package
-        run: |
-          rm -rf android-assets
-          mkdir -p android-assets/dynos/packs
-
-          if [ -d dynos/packs ]; then
-            cp -a dynos/packs/. android-assets/dynos/packs/
+          if [ -d textures ]; then
+            cp -a textures/. "$PACKAGE_DIR/textures/"
           fi
 
-          mkdir -p android-assets/dynos/packs/vanilla
-          cp -a build/us_pc/dynos/packs/vanilla/. android-assets/dynos/packs/vanilla/
+          if [ -d assets ]; then
+            cp -a assets/. "$PACKAGE_DIR/assets/"
+          fi
 
-          find android-assets/dynos/packs -type f ! \( -name '*.bin' -o -name '*.col' -o -name '*.tex' \) -delete
-          find android-assets/dynos/packs -type d -empty -delete
+          find "$PACKAGE_DIR" -type f \( \
+            -name '*.bin' -o \
+            -name '*.mio0' -o \
+            -name '*.o' -o \
+            -name '*.obj' -o \
+            -name '*.elf' -o \
+            -name '*.a' -o \
+            -name '*.so' \
+          \) -delete
 
-          cd android-assets
-          zip -r ../sm64coopdx-android-assets.zip dynos
+          find "$PACKAGE_DIR" -type d -empty -delete
 
-      - name: Upload sm64coopdx-android-assets.zip
+          {
+            printf '%s\n' 'SM64CoopDX source asset package'
+            printf 'Commit: %s\n' "$GITHUB_SHA"
+            printf 'Branch: %s\n' "$GITHUB_REF_NAME"
+            printf '\nDirectory layout:\n'
+            printf '%s\n' '  models/    Actor/model source folders and their files'
+            printf '%s\n' '  levels/    Level source folders and their files'
+            printf '%s\n' '  textures/  Repository-wide texture source files'
+            printf '%s\n' '  assets/    Other source assets used by the project'
+            printf '\nNo compiled binary files are included.\n'
+          } > "$PACKAGE_DIR/MANIFEST.txt"
+
+          echo "Packaged source files:"
+          find "$PACKAGE_DIR" -type f -print | sort
+
+          zip -qr "$ZIP_FILE" "$PACKAGE_DIR"
+
+          echo
+          echo "Created: $ZIP_FILE"
+          ls -lh "$ZIP_FILE"
+
+      - name: Upload ZIP artifact
         uses: actions/upload-artifact@v7
         with:
+          name: sm64coopdx-android-assets
           path: sm64coopdx-android-assets.zip
           archive: false
+          if-no-files-found: error
