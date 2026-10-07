@@ -158,11 +158,12 @@ jobs:
                     echo "::notice title=libmain.so ($abi)::$hash"
                 done
 
-            - name: Upload build directory
-              uses: actions/upload-artifact@v4
+            - name: Upload Android build directory
+              uses: actions/upload-artifact@v7
               with:
                 name: sm64coopdx-android-build
                 path: ./build
+                compression-level: 0
 
             - name: Zip the .apk package
               run: |
