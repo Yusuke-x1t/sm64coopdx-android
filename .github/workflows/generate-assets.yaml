@@ -1,0 +1,102 @@
+name: Generate Assets
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [Testing]
+  pull_request:
+    branches: [Testing]
+
+jobs:
+  generate-dynos:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y build-essential git python3 libglew-dev libz-dev libcurl4-openssl-dev zip
+
+      - name: Prepare DynOS generator
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("src/pc/pc_main.c")
+          text = path.read_text()
+
+          include_marker = '#include "pc/mods/mods.h"\n'
+          include_text = '#include "data/dynos.c.h"\n'
+
+          if include_text not in text:
+              if include_marker not in text:
+                  raise SystemExit("Could not find mods include marker")
+              text = text.replace(include_marker, include_marker + include_text, 1)
+
+          code_marker = '    configfile_load();\n'
+          code_text = '''    configfile_load();
+
+          #ifdef CI_GENERATE_DYNOS
+              configSkipPackGeneration = false;
+              dynos_gfx_init();
+              return 0;
+          #endif
+          '''
+
+          if "#ifdef CI_GENERATE_DYNOS" not in text:
+              if code_marker not in text:
+                  raise SystemExit("Could not find configfile_load marker")
+              text = text.replace(code_marker, code_text, 1)
+
+          path.write_text(text)
+          PY
+
+      - name: Build DynOS generator
+        run: make -j$(nproc) EXTRA_CFLAGS="-DCI_GENERATE_DYNOS"
+
+      - name: Prepare vanilla DynOS pack
+        run: |
+          rm -rf build/us_pc/dynos/packs/vanilla
+          mkdir -p build/us_pc/dynos/packs/vanilla
+          cp -a actors/. build/us_pc/dynos/packs/vanilla/
+
+      - name: Generate DynOS assets
+        run: ./build/us_pc/sm64coopdx
+
+      - name: Verify generated assets
+        run: |
+          test -f build/us_pc/dynos/packs/vanilla/toad_player_geo.bin
+
+          count=$(find build/us_pc/dynos/packs/vanilla -type f \( -name '*.bin' -o -name '*.col' -o -name '*.tex' \) | wc -l)
+
+          echo "Generated DynOS assets: $count"
+
+          test "$count" -gt 0
+
+      - name: Create assets package
+        run: |
+          rm -rf android-assets
+          mkdir -p android-assets/dynos/packs
+
+          if [ -d dynos/packs ]; then
+            cp -a dynos/packs/. android-assets/dynos/packs/
+          fi
+
+          mkdir -p android-assets/dynos/packs/vanilla
+          cp -a build/us_pc/dynos/packs/vanilla/. android-assets/dynos/packs/vanilla/
+
+          find android-assets/dynos/packs/vanilla -type f ! \( -name '*.bin' -o -name '*.col' -o -name '*.tex' \) -delete
+
+          find android-assets/dynos/packs/vanilla -type d -empty -delete
+
+          cd android-assets
+          zip -r ../sm64coopdx-android-assets.zip dynos
+
+      - name: Upload sm64coopdx-android-assets.zip
+        uses: actions/upload-artifact@v7
+        with:
+          path: sm64coopdx-android-assets.zip
+          archive: false
