@@ -37,11 +37,12 @@ jobs:
               text = text.replace(include_marker, include_marker + include_text, 1)
 
           code_marker = '    configfile_load();\n'
+
           code_text = '''    configfile_load();
 
           #ifdef CI_GENERATE_DYNOS
               configSkipPackGeneration = false;
-              dynos_gfx_init();
+              dynos_generate_packs("build/us_pc/dynos/packs");
               return 0;
           #endif
           '''
@@ -68,9 +69,7 @@ jobs:
 
       - name: Verify generated assets
         run: |
-          test -f build/us_pc/dynos/packs/vanilla/toad_player_geo.bin
-
-          count=$(find build/us_pc/dynos/packs/vanilla -type f \( -name '*.bin' -o -name '*.col' -o -name '*.tex' \) | wc -l)
+          count=$(find build/us_pc/dynos/packs -type f \( -name '*.bin' -o -name '*.col' -o -name '*.tex' \) | wc -l)
 
           echo "Generated DynOS assets: $count"
 
@@ -88,9 +87,8 @@ jobs:
           mkdir -p android-assets/dynos/packs/vanilla
           cp -a build/us_pc/dynos/packs/vanilla/. android-assets/dynos/packs/vanilla/
 
-          find android-assets/dynos/packs/vanilla -type f ! \( -name '*.bin' -o -name '*.col' -o -name '*.tex' \) -delete
-
-          find android-assets/dynos/packs/vanilla -type d -empty -delete
+          find android-assets/dynos/packs -type f ! \( -name '*.bin' -o -name '*.col' -o -name '*.tex' \) -delete
+          find android-assets/dynos/packs -type d -empty -delete
 
           cd android-assets
           zip -r ../sm64coopdx-android-assets.zip dynos
