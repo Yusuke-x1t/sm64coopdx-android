@@ -107,6 +107,7 @@ jobs:
               with:
                 path: ./build/us_pc/sm64coopdx_${{ matrix.platform.name }}.zip
                 archive: false
+
     build-android:
         if: ${{ (github.event_name != 'push' || contains(github.event.head_commit.message, '[build]')) && github.event.pull_request.draft == false }}
         runs-on: ubuntu-22.04
@@ -157,11 +158,17 @@ jobs:
                     echo "::notice title=libmain.so ($abi)::$hash"
                 done
 
+            - name: Upload build directory
+              uses: actions/upload-artifact@v4
+              with:
+                name: sm64coopdx-android-build
+                path: ./build
+
             - name: Zip the .apk package
               run: |
                 cd ./build/us_pc
                 zip -r sm64coopdx_Android.zip sm64coopdx.apk
-            
+
             - name: Upload artifact
               uses: actions/upload-artifact@v4
               with:
